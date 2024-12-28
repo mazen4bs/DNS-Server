@@ -9,10 +9,12 @@ def resolve_dns(query, record_type):
     try:
         if record_type == "A":
             # Resolving A record (IPv4 address)
-            return socket.gethostbyname(query)
+            result = dns.resolver.resolve(query, 'A')
+            return [ip.to_text() for ip in result]
         elif record_type == "AAAA":
             # Resolving AAAA record (IPv6 address)
-            return socket.getaddrinfo(query, None, socket.AF_INET6)[0][4][0]
+            result = dns.resolver.resolve(query, 'AAAA')
+            return [ip.to_text() for ip in result]
         elif record_type == "MX":
             # Resolving MX record (Mail Exchange)
             answers = dns.resolver.resolve(query, 'MX')
