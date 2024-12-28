@@ -1,9 +1,15 @@
 import socket
 import threading
 import dns.resolver
+import time
 
-# Global variable to store recent queries
+# Global variables
 recent_queries = []
+cache = {}  # Cache to store resolved queries
+
+# TTL (Time to Live) for cache entries (in seconds)
+CACHE_TTL = 300
+
 
 def resolve_dns(query, record_type):
     try:
@@ -28,9 +34,31 @@ def resolve_dns(query, record_type):
             answers = dns.resolver.resolve(query, 'NS')
             return [str(rdata.target) for rdata in answers]
         else:
-            return None  
-    except Exception as e:
-        return None  
+            return None
+    except Exception:
+        return None
+
+
+def cache_query(query, record_type, response):
+    """
+    Caches the resolved query result with a TTL.
+    """
+    expiry = time.time() + CACHE_TTL
+    cache[(query, record_type)] = {"response": response, "expiry": expiry}
+
+
+def get_cached_query(query, record_type):
+    """
+    Retrieves a cached query result if it exists and is not expired.
+    """
+    key = (query, record_type)
+    if key in cache:
+        entry = cache[key]
+        if time.time() < entry["expiry"]:  # Check if the cache entry is still valid
+            return entry["response"]
+        else:
+            del cache[key]  # Remove expired entry
+    return None
 
 
 def handle_client(conn, addr, recent_queries):
@@ -65,12 +93,18 @@ def handle_client(conn, addr, recent_queries):
                 print(f"[Server] Received query: {query} ({record_type}) from {addr}")
                 recent_queries.append({"client": addr, "query": data})
 
-                # Resolve the DNS query
-                response = resolve_dns(query, record_type.upper())
-                if response:
-                    conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
+                # Check cache first
+                cached_response = get_cached_query(query, record_type.upper())
+                if cached_response:
+                    conn.sendall(f"Cached Response: {cached_response}\n".encode())
                 else:
-                    conn.sendall(b"Query could not be resolved or unsupported record type.\n")
+                    # Resolve the DNS query and cache the result
+                    response = resolve_dns(query, record_type.upper())
+                    if response:
+                        conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
+                        cache_query(query, record_type.upper(), response)
+                    else:
+                        conn.sendall(b"Query could not be resolved or unsupported record type.\n")
 
                 # Ask if the client wants to continue
                 conn.sendall(b"Do you want to send another query? (yes/no): ")
@@ -96,8 +130,8 @@ def start_server():
     server.listen(5)
     print("[Server] Server is listening on 0.0.0.0:53535")
     while True:
-        conn, addr = server.accept()  # Accept new connections
-        thread = threading.Thread(target=handle_client, args=(conn, addr, recent_queries))  # Pass recent_queries here
+        conn, addr = server.accept()
+        thread = threading.Thread(target=handle_client, args=(conn, addr, recent_queries))
         thread.start()
         print(f"[Server] Active connections: {threading.active_count() - 1}")
 
@@ -123,10 +157,18 @@ def cli():
         else:
             print("[CLI] Invalid option. Try again.")
 
+
 if __name__ == "__main__":
-    # Run server and CLI in separate threads
     server_thread = threading.Thread(target=start_server)
-    server_thread.daemon = True  
+    server_thread.daemon = True
     server_thread.start()
 
-    cli()  
+    cli()
+
+
+
+
+
+
+
+
