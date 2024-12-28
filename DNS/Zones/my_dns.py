@@ -6,7 +6,7 @@ import time
 # Global variables
 recent_queries = []
 cache = {}  # Cache to store resolved queries
-
+recent_queries_lock = threading.Lock()
 # TTL (Time to Live) for cache entries (in seconds)
 CACHE_TTL = 300
 
@@ -22,31 +22,42 @@ DNS_RESPONSE_CODES = {
 }
 
 
-def resolve_dns(query, record_type):
+def resolve_dns(query, record_type, is_recursive=True): # is_recursive=True means that the query is recursive if it is not recursive then it is iterative 
     """
     Resolves a DNS query and returns the response or error code.
+    - is_recursive: True for recursive queries, False for iterative queries.
     """
     try:
         if not query or not record_type:
             return None, 1  # FORMERR: Invalid query format
 
-        if record_type == "A":
-            result = dns.resolver.resolve(query, 'A')
-            return [ip.to_text() for ip in result], 0  # NOERROR
-        elif record_type == "AAAA":
-            result = dns.resolver.resolve(query, 'AAAA')
-            return [ip.to_text() for ip in result], 0  # NOERROR
-        elif record_type == "MX":
-            answers = dns.resolver.resolve(query, 'MX')
-            return [str(rdata.exchange) for rdata in answers], 0  # NOERROR
-        elif record_type == "CNAME":
-            answers = dns.resolver.resolve(query, 'CNAME')
-            return [str(rdata.target) for rdata in answers], 0  # NOERROR
-        elif record_type == "NS":
-            answers = dns.resolver.resolve(query, 'NS')
-            return [str(rdata.target) for rdata in answers], 0  # NOERROR
+        if is_recursive:
+            # Perform recursive resolution by querying upstream servers
+            if record_type == "A":
+                result = dns.resolver.resolve(query, 'A')
+                return [ip.to_text() for ip in result], 0  # NOERROR
+            elif record_type == "AAAA":
+                result = dns.resolver.resolve(query, 'AAAA')
+                return [ip.to_text() for ip in result], 0  # NOERROR
+            elif record_type == "MX":
+                answers = dns.resolver.resolve(query, 'MX')
+                return [str(rdata.exchange) for rdata in answers], 0  # NOERROR
+            elif record_type == "CNAME":
+                answers = dns.resolver.resolve(query, 'CNAME')
+                return [str(rdata.target) for rdata in answers], 0  # NOERROR
+            elif record_type == "NS":
+                answers = dns.resolver.resolve(query, 'NS')
+                return [str(rdata.target) for rdata in answers], 0  # NOERROR
+            else:
+                return None, 4  # NOTIMP: Query type not supported
         else:
-            return None, 4  # NOTIMP: Query type not supported
+            # Perform iterative resolution by returning referral to another nameserver
+            if record_type == "NS":
+                # Query NS records to return a referral to another nameserver
+                answers = dns.resolver.resolve(query, 'NS')
+                return [str(rdata.target) for rdata in answers], 0  # NOERROR
+            else:
+                return None, 4  # NOTIMP for non-NS iterative queries
 
     except dns.resolver.NXDOMAIN:
         return None, 3  # NXDOMAIN: Domain does not exist
@@ -56,6 +67,7 @@ def resolve_dns(query, record_type):
         return None, 2  # SERVFAIL: No available name servers
     except Exception:
         return None, 5  # REFUSED: Query refused due to other reasons
+
 
 
 
@@ -95,7 +107,6 @@ def handle_client(conn, addr, recent_queries):
             if username in valid_credentials and valid_credentials[username] == password:
                 conn.sendall(b"Authentication successful. You may send your DNS query.\n")
                 break  # Exit the loop once authenticated
-
             else:
                 conn.sendall(b"Authentication failed. Invalid username or password. Please try again.\n")
                 print(f"[Server] Authentication failed for {addr}")
@@ -116,14 +127,23 @@ def handle_client(conn, addr, recent_queries):
                 continue
 
             print(f"[Server] Received query: {query} ({record_type}) from {addr}")
-            recent_queries.append({"client": addr, "query": data})
 
-            # Resolve the DNS query
-            response, rcode = resolve_dns(query, record_type.upper())
-            if rcode == 0:  # NOERROR
-                conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
+            # Locking the recent_queries list while adding a new query
+            with recent_queries_lock:
+                recent_queries.append({"client": addr, "query": data})
+
+            # Check if the query is in the cache first
+            cached_response = get_cached_query(query, record_type)
+            if cached_response:
+                conn.sendall(f"Resolved from cache: {query} ({record_type}) to {cached_response}\n".encode())
             else:
-                conn.sendall(f"Error: {DNS_RESPONSE_CODES.get(rcode, 'Unknown error')}\n".encode())
+                # Resolve the DNS query if it's not cached
+                response, rcode = resolve_dns(query, record_type.upper())
+                if rcode == 0:  # NOERROR
+                    cache_query(query, record_type.upper(), response)
+                    conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
+                else:
+                    conn.sendall(f"Error: {DNS_RESPONSE_CODES.get(rcode, 'Unknown error')}\n".encode())
 
             # Ask if the client wants to continue
             while True:  # Loop until valid input is received
@@ -144,6 +164,7 @@ def handle_client(conn, addr, recent_queries):
     finally:
         conn.close()
         print(f"[Server] Connection with {addr} closed")
+
 
 
 
