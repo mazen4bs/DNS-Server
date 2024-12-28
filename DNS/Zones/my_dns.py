@@ -10,33 +10,53 @@ cache = {}  # Cache to store resolved queries
 # TTL (Time to Live) for cache entries (in seconds)
 CACHE_TTL = 300
 
+DNS_RESPONSE_CODES = {
+    0: "NOERROR: Query successful.",
+    1: "FORMERR: Query format error.",
+    2: "SERVFAIL: Server failure.",
+    3: "NXDOMAIN: Domain name does not exist.",
+    4: "NOTIMP: Operation not implemented.",
+    5: "REFUSED: Query refused.",
+    8: "NXRRSET: RRSet does not exist.",
+    9: "NOTAUTH: Server is not authoritative for the domain.",
+}
+
 
 def resolve_dns(query, record_type):
+    """
+    Resolves a DNS query and returns the response or error code.
+    """
     try:
+        if not query or not record_type:
+            return None, 1  # FORMERR: Invalid query format
+
         if record_type == "A":
-            # Resolving A record (IPv4 address)
             result = dns.resolver.resolve(query, 'A')
-            return [ip.to_text() for ip in result]
+            return [ip.to_text() for ip in result], 0  # NOERROR
         elif record_type == "AAAA":
-            # Resolving AAAA record (IPv6 address)
             result = dns.resolver.resolve(query, 'AAAA')
-            return [ip.to_text() for ip in result]
+            return [ip.to_text() for ip in result], 0  # NOERROR
         elif record_type == "MX":
-            # Resolving MX record (Mail Exchange)
             answers = dns.resolver.resolve(query, 'MX')
-            return [str(rdata.exchange) for rdata in answers]
+            return [str(rdata.exchange) for rdata in answers], 0  # NOERROR
         elif record_type == "CNAME":
-            # Resolving CNAME record (Canonical Name)
             answers = dns.resolver.resolve(query, 'CNAME')
-            return [str(rdata.target) for rdata in answers]
+            return [str(rdata.target) for rdata in answers], 0  # NOERROR
         elif record_type == "NS":
-            # Resolving NS record (Name Server)
             answers = dns.resolver.resolve(query, 'NS')
-            return [str(rdata.target) for rdata in answers]
+            return [str(rdata.target) for rdata in answers], 0  # NOERROR
         else:
-            return None
+            return None, 4  # NOTIMP: Query type not supported
+
+    except dns.resolver.NXDOMAIN:
+        return None, 3  # NXDOMAIN: Domain does not exist
+    except dns.resolver.NoAnswer:
+        return None, 8  # NXRRSET: RRSet does not exist
+    except dns.resolver.NoNameservers:
+        return None, 2  # SERVFAIL: No available name servers
     except Exception:
-        return None
+        return None, 5  # REFUSED: Query refused due to other reasons
+
 
 
 def cache_query(query, record_type, response):
@@ -64,63 +84,68 @@ def get_cached_query(query, record_type):
 def handle_client(conn, addr, recent_queries):
     print(f"[Server] Connection established with {addr}")
     try:
-        # Step 1: Authentication
-        conn.sendall(b"Enter username: ")
-        username = conn.recv(1024).decode().strip()
-        conn.sendall(b"Enter password: ")
-        password = conn.recv(1024).decode().strip()
+        while True:  # Loop for authentication until success
+            # Authentication Step
+            conn.sendall(b"Enter username: ")
+            username = conn.recv(1024).decode().strip()
+            conn.sendall(b"Enter password: ")
+            password = conn.recv(1024).decode().strip()
 
-        valid_credentials = {"a": "p"}
-        if username in valid_credentials and valid_credentials[username] == password:
-            conn.sendall(b"Authentication successful. You may send your DNS query.\n")
+            valid_credentials = {"a": "p"}
+            if username in valid_credentials and valid_credentials[username] == password:
+                conn.sendall(b"Authentication successful. You may send your DNS query.\n")
+                break  # Exit the loop once authenticated
 
-            # Step 2: Receive and Validate DNS Query in a loop
-            while True:
-                conn.sendall(b"Enter DNS query (format: domain,record_type): ")
-                data = conn.recv(1024).decode().strip()
+            else:
+                conn.sendall(b"Authentication failed. Invalid username or password. Please try again.\n")
+                print(f"[Server] Authentication failed for {addr}")
 
-                # Validate input format
-                if not data or "," not in data:
-                    conn.sendall(b"Invalid query format. Use: domain,record_type\n")
-                    continue
+        # Step 2: Receive and Validate DNS Query in a loop
+        while True:
+            conn.sendall(b"Enter DNS query (format: domain,record_type): ")
+            data = conn.recv(1024).decode().strip()
 
-                # Extract domain and record type
-                query, record_type = map(str.strip, data.split(",", 1))
-                if not query or not record_type:
-                    conn.sendall(b"Invalid query format. Use: domain,record_type\n")
-                    continue
+            if not data or "," not in data:
+                conn.sendall(b"Invalid query format. Use: domain,record_type\n")
+                continue
 
-                print(f"[Server] Received query: {query} ({record_type}) from {addr}")
-                recent_queries.append({"client": addr, "query": data})
+            # Extract domain and record type
+            query, record_type = map(str.strip, data.split(",", 1))
+            if not query or not record_type:
+                conn.sendall(b"Invalid query format. Use: domain,record_type\n")
+                continue
 
-                # Check cache first
-                cached_response = get_cached_query(query, record_type.upper())
-                if cached_response:
-                    conn.sendall(f"Cached Response: {cached_response}\n".encode())
-                else:
-                    # Resolve the DNS query and cache the result
-                    response = resolve_dns(query, record_type.upper())
-                    if response:
-                        conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
-                        cache_query(query, record_type.upper(), response)
-                    else:
-                        conn.sendall(b"Query could not be resolved or unsupported record type.\n")
+            print(f"[Server] Received query: {query} ({record_type}) from {addr}")
+            recent_queries.append({"client": addr, "query": data})
 
-                # Ask if the client wants to continue
+            # Resolve the DNS query
+            response, rcode = resolve_dns(query, record_type.upper())
+            if rcode == 0:  # NOERROR
+                conn.sendall(f"Resolved {query} ({record_type}) to {response}\n".encode())
+            else:
+                conn.sendall(f"Error: {DNS_RESPONSE_CODES.get(rcode, 'Unknown error')}\n".encode())
+
+            # Ask if the client wants to continue
+            while True:  # Loop until valid input is received
                 conn.sendall(b"Do you want to send another query? (yes/no): ")
                 continue_query = conn.recv(1024).decode().strip().lower()
-                if continue_query != "yes":
-                    conn.sendall(b"Closing connection. Goodbye!\n")
-                    break
-        else:
-            conn.sendall(b"Authentication failed. Invalid username or password.\n")
-            print(f"[Server] Authentication failed for {addr}")
+
+                if continue_query in ["yes", "no"]:
+                    break  # Exit the loop if input is valid
+                else:
+                    conn.sendall(b"Invalid input. Please enter 'yes' or 'no'.\n")
+            
+            if continue_query == "no":
+                conn.sendall(b"Closing connection. Goodbye!\n")
+                break
 
     except Exception as e:
         print(f"[Server] Error handling client {addr}: {e}")
     finally:
         conn.close()
         print(f"[Server] Connection with {addr} closed")
+
+
 
 
 
@@ -164,11 +189,3 @@ if __name__ == "__main__":
     server_thread.start()
 
     cli()
-
-
-
-
-
-
-
-
