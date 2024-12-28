@@ -2,7 +2,7 @@ import socket
 
 def client():
     # Connect to the server
-    server_ip = '192.168.1.13i'
+    server_ip = '192.168.1.16'
     server_port = 53535
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect((server_ip, server_port))
