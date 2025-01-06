@@ -233,16 +233,24 @@ def cli():
         print("\nServer CLI:")
         print("1. View Active Connections")
         print("2. View Recent Queries")
-        print("3. Stop Server")
+        print("3. View Cache Status")
+        print("4. View Protocol Usage")
+        print("5. Stop Server")
         choice = input("Select an option: ")
 
         if choice == "1":
             print(f"[CLI] Active Connections: {threading.active_count() - 1}")
         elif choice == "2":
             print("[CLI] Recent Queries:")
-            for query in recent_queries[-10:]:  # Show the last 10 queries
+            for query in recent_queries[-10:]:
                 print(f"Client {query['client']} queried: {query['query']}")
         elif choice == "3":
+            print("[CLI] Cache Status:")
+            for key, value in cache.items():
+                print(f"Query: {key}, Response: {value['response']}, Expires In: {value['expiry'] - time.time()} seconds")
+        elif choice == "4":
+            print("[CLI] Protocol Usage: [Placeholder for protocol stats]")
+        elif choice == "5":
             print("[CLI] Shutting down server...")
             break
         else:
