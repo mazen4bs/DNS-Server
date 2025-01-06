@@ -234,8 +234,7 @@ def cli():
         print("1. View Active Connections")
         print("2. View Recent Queries")
         print("3. View Cache Status")
-        print("4. View Protocol Usage")
-        print("5. Stop Server")
+        print("4. Stop Server")
         choice = input("Select an option: ")
 
         if choice == "1":
@@ -249,8 +248,6 @@ def cli():
             for key, value in cache.items():
                 print(f"Query: {key}, Response: {value['response']}, Expires In: {value['expiry'] - time.time()} seconds")
         elif choice == "4":
-            print("[CLI] Protocol Usage: [Placeholder for protocol stats]")
-        elif choice == "5":
             print("[CLI] Shutting down server...")
             break
         else:
@@ -258,7 +255,6 @@ def cli():
 
 
 if __name__ == "__main__":
-    # Start TCP and UDP servers in separate threads
     tcp_thread = threading.Thread(target=start_tcp_server)
     tcp_thread.daemon = True
     tcp_thread.start()
