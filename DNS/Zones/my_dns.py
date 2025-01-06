@@ -169,17 +169,62 @@ def handle_client(conn, addr, recent_queries):
 
 
 
-
-def start_server():
+def start_tcp_server():
+    """
+    Starts the TCP server to handle DNS queries over TCP.
+    """
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("0.0.0.0", 53535))
     server.listen(5)
-    print("[Server] Server is listening on 0.0.0.0:53535")
+    print("[Server] TCP server listening on 0.0.0.0:53535")
     while True:
         conn, addr = server.accept()
         thread = threading.Thread(target=handle_client, args=(conn, addr, recent_queries))
         thread.start()
         print(f"[Server] Active connections: {threading.active_count() - 1}")
+
+
+def start_udp_server():
+    """
+    Starts the UDP server to handle DNS queries over UDP.
+    """
+    udp_server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_server.bind(("0.0.0.0", 53535))
+    print("[Server] UDP server listening on 0.0.0.0:53535")
+    while True:
+        data, addr = udp_server.recvfrom(512)  # DNS responses typically fit within 512 bytes for UDP
+        thread = threading.Thread(target=handle_udp_query, args=(data, addr, udp_server))
+        thread.start()
+
+
+def handle_udp_query(data, addr, udp_server):
+    """
+    Handles DNS queries received over UDP.
+    """
+    try:
+        # Decode and process the query
+        query_data = data.decode().strip()
+        if "," not in query_data:
+            udp_server.sendto(b"Invalid query format. Use: domain,record_type", addr)
+            return
+
+        query, record_type = map(str.strip, query_data.split(",", 1))
+        print(f"[UDP Server] Received query: {query} ({record_type}) from {addr}")
+
+        # Check the cache
+        cached_response = get_cached_query(query, record_type)
+        if cached_response:
+            udp_server.sendto(f"Resolved from cache: {query} ({record_type}) to {cached_response}\n".encode(), addr)
+        else:
+            # Resolve the DNS query
+            response, rcode = resolve_dns(query, record_type.upper())
+            if rcode == 0:  # NOERROR
+                cache_query(query, record_type.upper(), response)
+                udp_server.sendto(f"Resolved {query} ({record_type}) to {response}\n".encode(), addr)
+            else:
+                udp_server.sendto(f"Error: {DNS_RESPONSE_CODES.get(rcode, 'Unknown error')}\n".encode(), addr)
+    except Exception as e:
+        print(f"[UDP Server] Error handling client {addr}: {e}")
 
 
 def cli():
@@ -205,8 +250,14 @@ def cli():
 
 
 if __name__ == "__main__":
-    server_thread = threading.Thread(target=start_server)
-    server_thread.daemon = True
-    server_thread.start()
+    # Start TCP and UDP servers in separate threads
+    tcp_thread = threading.Thread(target=start_tcp_server)
+    tcp_thread.daemon = True
+    tcp_thread.start()
 
+    udp_thread = threading.Thread(target=start_udp_server)
+    udp_thread.daemon = True
+    udp_thread.start()
+
+    # Start CLI in the main thread
     cli()
